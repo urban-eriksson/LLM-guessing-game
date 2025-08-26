@@ -4,14 +4,14 @@ import json
 from datetime import datetime
 
 # Configuration
-API_PROVIDER = "google"  # Change to "openai", "anthropic", or "google"
-NUMBER_RANGE = 5  # Numbers from 1 to this value
-NUM_GAMES = 10
+API_PROVIDER = "anthropic"  # Change to "openai", "anthropic", "google", or "control"
+NUMBER_RANGE = 10  # Numbers from 1 to this value
+NUM_GAMES = 100
 
 # Model configuration based on provider
 if API_PROVIDER == "openai":
     import openai
-    MODEL_NAME = "gpt-4o-mini"  # or "gpt-4", "gpt-3.5-turbo", etc.
+    MODEL_NAME = "gpt-5-mini"  # or "gpt-4", "gpt-3.5-turbo", etc.
     
     # Retrieve the OpenAI API key from the environment variable
     openai.api_key = os.environ.get("OPENAI_API_KEY")
@@ -22,7 +22,7 @@ if API_PROVIDER == "openai":
     
 elif API_PROVIDER == "anthropic":
     import anthropic
-    MODEL_NAME = "claude-3-5-sonnet-20241022"  # or "claude-3-opus-20240229", "claude-3-haiku-20240307"
+    MODEL_NAME = "claude-sonnet-4-20250514"  # or "claude-3-opus-20240229", "claude-3-haiku-20240307"
     
     # Retrieve the Anthropic API key from the environment variable
     api_key = os.environ.get("ANTHROPIC_API_KEY")
@@ -42,6 +42,9 @@ elif API_PROVIDER == "google":
     
     genai.configure(api_key=api_key)
     client = genai.GenerativeModel(MODEL_NAME)
+
+elif API_PROVIDER == 'control':
+    MODEL_NAME = "control"
 
 else:
     raise ValueError(f"Unknown API provider: {API_PROVIDER}")
@@ -101,6 +104,35 @@ def call_api(conversation):
             chat_session = client.start_chat(history=history)
             response = chat_session.send_message(current_prompt["parts"])
             return response.text
+
+        elif API_PROVIDER == "control":
+            global CONTROL_NUMBER
+
+            # Find the most recent user message
+            last_user = None
+            for msg in reversed(conversation):
+                if msg["role"] == "user":
+                    last_user = msg["content"].strip()
+                    break
+
+            if last_user is None:
+                # Defensive: always return a valid string
+                return "not correct"
+
+            # Game setup message: pick a fresh secret number for this game
+            if "Let's play a game!" in last_user:
+                CONTROL_NUMBER = random.randint(1, NUMBER_RANGE)
+                # Exactly this capitalization + period, per your prompt
+                return "Okay, I have a number."
+
+            # Guess handling
+            try:
+                guess = int(last_user)
+            except ValueError:
+                # If it's not a numeric guess (e.g. correction prompt), keep returning a valid token
+                return "not correct"
+
+            return "correct" if guess == CONTROL_NUMBER else "not correct"        
             
     except Exception as e:
         print(f"Error calling {API_PROVIDER} API: {e}")
@@ -108,9 +140,18 @@ def call_api(conversation):
 
 def play_single_game():
     """Play one complete guessing game and return the number of attempts needed."""
+
     conversation = [
-        {"role": "user", "content": f"Let's play a game! You think of a number from 1 to {NUMBER_RANGE}. Do not include the number in the output. I will then make guesses containing only a number. After each guess, please respond with the exact string 'correct' if I guessed right or the exact string 'not correct' if I guessed wrong."}
-    ]
+    {"role": "user", "content": f"""Let's play a game! You will think of a number from 1 to {NUMBER_RANGE}. I will then try to guess it.
+
+    Your task is to respond to my guesses with one of two exact strings:
+    - 'correct'
+    - 'not correct'
+
+    You must always reply. Under no circumstances should you give an empty or blank response. Do not add any other words or punctuation.
+
+    First, think of your number. Let me know you are ready by responding with 'Okay, I have a number.'. Do not reveal the number."""}
+    ]    
     
     # Get the model to think of a number
     gamesetup_response = call_api(conversation)
@@ -125,6 +166,7 @@ def play_single_game():
     while attempts < len(guess_sequence):
         guess = guess_sequence[attempts]
         attempts += 1
+        CONTROL_NUMBER = None  # used only when API_PROVIDER == "control"
         conversation.append({"role": "user", "content": str(guess)})
         
         response = call_api(conversation)

@@ -20,7 +20,7 @@ def _infer_range_from_result(result):
     """Best-effort attempt count range for a result."""
     if 'number_range' in result and isinstance(result['number_range'], int):
         return result['number_range']
-    # Fallbacks
+    # Fallback to attempt_counts length
     if 'attempt_counts' in result:
         ac = result['attempt_counts']
         if isinstance(ac, list):
@@ -31,14 +31,12 @@ def _infer_range_from_result(result):
                 return max(int(k) for k in ac.keys())
             except Exception:
                 return len(ac)
-    if 'cumulative_percentage' in result:
-        return len(result['cumulative_percentage'])
     return 0
 
 def _attempt_percentages_for_result(result, max_range):
     """
     Return a length=max_range list of per-attempt success percentages for a single result.
-    Prefers attempt_counts; falls back to diffs of cumulative_percentage.
+    This function relies exclusively on 'attempt_counts'.
     """
     num_games = float(result.get('num_games', 1)) or 1.0
     local_range = _infer_range_from_result(result)
@@ -65,22 +63,7 @@ def _attempt_percentages_for_result(result, max_range):
             pct = (counts / num_games) * 100.0
         # Place into the max_range-length vector
         per_attempt_pct[:min(local_range, max_range)] = pct[:min(local_range, max_range)]
-        return per_attempt_pct
-
-    # Fallback: use diffs of cumulative percentages
-    cum = result.get('cumulative_percentage', [])
-    if not cum:
-        return per_attempt_pct  # all zeros
-    # Ensure numeric
-    cum = [float(x) for x in cum[:local_range]]
-    diffs = []
-    for i, val in enumerate(cum):
-        if i == 0:
-            diffs.append(max(0.0, val))
-        else:
-            diffs.append(max(0.0, val - cum[i - 1]))
-    diffs = np.array(diffs, dtype=float)
-    per_attempt_pct[:min(local_range, max_range)] = diffs[:min(local_range, max_range)]
+        
     return per_attempt_pct
 
 def create_histogram_plot(results):
@@ -96,6 +79,12 @@ def create_histogram_plot(results):
 
     # Colors
     colors = plt.cm.Set1(np.linspace(0, 1, max(2, len(results))))
+    official_colors = {
+        'openai': "#74AA9C", 
+        'google': "#4285F4", 
+        'anthropic': "#C15F3C",
+        'control': 'dimgrey'  # Added 'control' color
+    }    
 
     # Bar layout
     k = len(results)  # number of models
@@ -105,25 +94,39 @@ def create_histogram_plot(results):
 
     # Plot each model's bars side-by-side
     for i, result in enumerate(results):
-        model = result.get('model', f'Model {i+1}')
-        num_games = result.get('num_games', 0)
+        model = result.get('model', f'Model {i+1}').lower() # Use lower for matching
+
+        if 'gpt' in model:
+            color = official_colors['openai']
+        elif 'gemini' in model:
+            color = official_colors['google']
+        elif 'claude' in model:
+            color = official_colors['anthropic']
+        elif 'control' in model:
+            color = official_colors['control']
+        else:
+            color = colors[i % len(colors)]
 
         per_attempt_pct = _attempt_percentages_for_result(result, max_range)
         ax.bar(
             attempts + offsets[i],
             per_attempt_pct,
             width=bar_width,
-            label=f'{model} (n={num_games})',
+            label=f'{result.get("model")}', # Use original model name for label
             align='center',
             edgecolor='black',
             linewidth=0.5,
-            color=colors[i % len(colors)],
+            color=color,
         )
 
+    #  Add dashed line at 10% level 
+    expected_level = 100 / max_range
+    ax.axhline(y=expected_level, color='black', linestyle='--', linewidth=2, label=f"Expected Random Chance ({expected_level}%)")
+
     # Aesthetics
-    ax.set_xlabel('Attempt Number', fontsize=12)
-    ax.set_ylabel('Success Percentage per Attempt (%)', fontsize=12)
-    ax.set_title('Per-Attempt Success Distribution (Grouped Histogram)', fontsize=14, fontweight='bold')
+    ax.set_xlabel('Guess Number', fontsize=12)
+    ax.set_ylabel('Success Percentage per Guess (%)', fontsize=12)
+    ax.set_title('Per-Guess Success Distribution', fontsize=14, fontweight='bold')
     ax.set_xticks(attempts)
     ax.set_xlim(0.5, max_range + 0.5)
     ax.set_ylim(0, 100)
@@ -142,16 +145,21 @@ def print_summary(results):
         print(f"Model: {result.get('model')}")
         print(f"Games: {result.get('num_games')}")
         rng = _infer_range_from_result(result)
-        # Prefer explicit number_range if present
         explicit_rng = result.get('number_range', rng)
         print(f"Range: 1-{explicit_rng}")
         print(f"Timestamp: {result.get('timestamp')}")
         print(f"Attempt distribution: {result.get('attempt_counts')}")
-        final_cum = (result.get('cumulative_percentage') or [0])[-1]
-        try:
-            print(f"Final success rate: {float(final_cum):.1f}%")
-        except Exception:
-            print(f"Final success rate: {final_cum}")
+        
+        # Calculate success rate from attempt_counts
+        attempt_counts = result.get('attempt_counts', [])
+        num_games = result.get('num_games', 1)
+        if num_games > 0 and attempt_counts:
+            completed_games = sum(attempt_counts)
+            success_rate = (completed_games / num_games) * 100.0
+            print(f"Final success rate: {success_rate:.1f}%")
+        else:
+            print("Final success rate: N/A")
+            
         print("-" * 30)
 
 def main():
@@ -159,7 +167,7 @@ def main():
     results = load_results()
     
     if not results:
-        print("No result files found. Make sure to run baseline.py first.")
+        print("No result files found. Make sure to run your game script first.")
         return
     
     print(f"Found {len(results)} result file(s)")
